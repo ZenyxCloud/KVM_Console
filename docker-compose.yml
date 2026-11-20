@@ -3,7 +3,6 @@ services:
     image: fosrl/pangolin-cli:latest
     container_name: pangolin-cli
     restart: unless-stopped
-    network_mode: host
     cap_add:
       - NET_ADMIN
     devices:
@@ -13,21 +12,25 @@ services:
       CLIENT_ID: "${PANGOLIN_CLIENT_ID:?Set PANGOLIN_CLIENT_ID}"
       CLIENT_SECRET: "${PANGOLIN_CLIENT_SECRET:?Set PANGOLIN_CLIENT_SECRET}"
     command: ["--override-dns=false"]
+    ports:
+      - "${LISTEN_ADDR:-127.0.0.1:8080}:8080"
 
   kvm-console:
     image: ghcr.io/zenyxcloud/kvm-console:latest
     restart: unless-stopped
-    network_mode: host
+    network_mode: service:pangolin-cli
     depends_on:
-      - pangolin-cli
+      pangolin-cli:
+        condition: service_started
+        restart: true
     environment:
-      LISTEN_ADDR: "${LISTEN_ADDR:-127.0.0.1:8080}"
+      LISTEN_ADDR: ":8080"
       API_KEY: "${API_KEY:?Set API_KEY}"
       WHMCS_IPS: "${WHMCS_IPS:?Set WHMCS_IPS}"
       PVE_ALLOWED_NETWORKS: "${PVE_ALLOWED_NETWORKS:?Set PVE_ALLOWED_NETWORKS}"
       PVE_ALLOWED_PORTS: "${PVE_ALLOWED_PORTS:-}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
-      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-127.0.0.1/32}"
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       CLIENT_IP_VALIDATE: "${CLIENT_IP_VALIDATE:-}"
       TOKEN_TTL: "${TOKEN_TTL:-}"
       SESSION_MAX_DURATION: "${SESSION_MAX_DURATION:-}"

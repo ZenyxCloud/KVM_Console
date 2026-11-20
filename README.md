@@ -36,9 +36,16 @@ logging the request path for `/auth/` if those logs are retained.
 
 Use a Linux Docker Standalone endpoint with `/dev/net/tun` available.
 The repository's `docker-compose.yml` starts KVM Console and the Pangolin
-CLI machine client. Both use the host network so KVM Console can use the
-Pangolin routes directly. Only the Pangolin container has `NET_ADMIN`. KVM
-Console defaults to `127.0.0.1:8080` for the host's HTTPS reverse proxy.
+CLI machine client. Pangolin runs on the stack's Docker bridge and shares its
+network namespace with KVM Console. Its routes are scoped to that namespace.
+Only the Pangolin container has `NET_ADMIN`. Docker publishes the gateway on
+`127.0.0.1:8080` by default for the host's HTTPS reverse proxy.
+
+If upgrading from the earlier host-network Compose, stop its Pangolin
+container before redeploying. If the host's network is down, use its
+hypervisor or equivalent out-of-band console and run
+`docker stop -t 20 pangolin-cli`. Verify the host is reachable before
+starting the updated stack.
 
 1. In Pangolin, use a site connector on a network that can reach Proxmox.
    Create a **private CIDR** resource for each dedicated Proxmox subnet.
@@ -65,7 +72,7 @@ WHMCS_IPS=203.0.113.10
 PVE_ALLOWED_NETWORKS=10.20.0.0/16
 PVE_ALLOWED_PORTS=8006
 ALLOWED_ORIGINS=https://my.zenyx.eu
-TRUSTED_PROXIES=127.0.0.1/32
+TRUSTED_PROXIES=
 ```
 
 In existing Portainer stacks, rename `CLIENT_ID` to `PANGOLIN_CLIENT_ID`
@@ -78,12 +85,10 @@ cover the real private destination addresses granted in Pangolin.
 `ALLOWED_ORIGINS` includes the public origins of the WHMCS client and admin
 areas. Set each private server's TLS fingerprint in WHMCS.
 
-The stack uses Pangolin's split tunnel and leaves DNS resolution to the
-gateway host. Use real private Proxmox addresses or hostnames the gateway can
+The stack uses Pangolin's split tunnel and Docker's normal DNS resolution. Use real private Proxmox addresses or hostnames the gateway can
 resolve to those addresses. Do not assign an exit node to this machine client.
-WHMCS itself needs access to Proxmox to request the console ticket. If the
-gateway host has an alternate route to the same addresses, verify that the
-preferred route to them uses Pangolin.
+WHMCS itself needs access to Proxmox to request the console ticket. Use a dedicated Proxmox subnet that does not overlap the stack's Docker
+bridge.
 
 After deployment, verify that the machine client is connected in Pangolin
 and open a new WHMCS console. `/healthz` checks only the gateway process.
@@ -110,11 +115,19 @@ upgrades. The default listener is `127.0.0.1:8080`. For a reverse proxy on
 another machine, set `LISTEN_ADDR=0.0.0.0:8090` in Portainer or `.env` and
 point the reverse proxy to the gateway host's IP on port 8090. Restrict
 access to that HTTP backend port to the reverse proxy. Set `TRUSTED_PROXIES`
-to the reverse proxy's source address.
+to the proxy's source address **as seen inside the stack**, with a `/32`
+for a single IPv4 address. For a reverse proxy on the Docker host connecting
+through the loopback published port, use the Docker bridge gateway address
+reported by this command.
 
-The Compose stack uses host networking, so `LISTEN_ADDR` sets the host port
-directly. For standalone deployments outside the Compose stack, the gateway
-can terminate TLS with `TLS_CERT_FILE` and `TLS_KEY_FILE`.
+```sh
+docker inspect pangolin-cli --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'
+```
+
+In Compose, `LISTEN_ADDR` sets the published host address and port. The gateway
+listens on port 8080 inside the shared namespace. For standalone deployments
+outside Compose, the gateway can terminate TLS with `TLS_CERT_FILE` and
+`TLS_KEY_FILE`.
 
 The following nginx location forwards HTTPS traffic to the Compose listener.
 
@@ -154,7 +167,7 @@ With Caddy on the same host, use `reverse_proxy 127.0.0.1:8080` and configure
 | `CLIENT_MESSAGE_LIMIT` | `4194304` | Largest message accepted from a browser (bytes). |
 | `PING_INTERVAL` | `25s` | Websocket pings on both legs (keeps idle consoles open through proxies). |
 | `PVE_DIAL_TIMEOUT` | `10s` | |
-| `LISTEN_ADDR` | `:8080` | Host bind address and port. Compose defaults to `127.0.0.1:8080`. |
+| `LISTEN_ADDR` | `:8080` | Host address and port published by Compose. Compose defaults to `127.0.0.1:8080`. |
 | `LOG_LEVEL` | `info` | JSON logs on stdout. |
 
 ## WHMCS and cluster changes
