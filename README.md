@@ -80,9 +80,9 @@ Caddy needs nothing more than `reverse_proxy 127.0.0.1:8080`.
 |---|---|---|
 | `API_KEY` / `API_KEY_FILE` | — | Shared secret, ≥ 32 characters. Same value as the API key in WHMCS. |
 | `WHMCS_IPS` | — | Addresses or CIDRs allowed to call `POST /token`. |
-| `PVE_ALLOWED_NETWORKS` | — | CIDRs the gateway may connect to (the nodes' private network). |
+| `PVE_ALLOWED_NETWORKS` | — | CIDRs the gateway may connect to (the private networks of every cluster). |
 | `PVE_ALLOWED_PORTS` | `8006` | Ports allowed on the nodes. |
-| `PVE_CA_FILE` | system CAs | PEM bundle for the nodes' certificates, normally the cluster's `/etc/pve/pve-root-ca.pem`. |
+| `PVE_CA_FILE` | system CAs | CA certificates of the nodes: files and/or directories (every `*.pem` / `*.crt` inside), comma-separated. One `/etc/pve/pve-root-ca.pem` per cluster. |
 | `PVE_TLS_INSECURE` | `false` | Skip certificate verification of the nodes. Last resort only. |
 | `ALLOWED_ORIGINS` | — | Origins allowed to open a console, e.g. `https://my.zenyx.eu`. Empty accepts any origin (warning logged). |
 | `TRUSTED_PROXIES` | — | Reverse proxies whose `X-Forwarded-For` is trusted. |
@@ -101,6 +101,27 @@ The node certificates must name the address WHMCS uses for the server (IP or
 hostname). After moving the nodes to private addresses, regenerate them with
 `pvecm updatecerts --force` on each node, or set a hostname that the
 certificates already contain.
+
+## Several clusters
+
+One gateway serves every Proxmox cluster and standalone node: the target
+comes from WHMCS with each console request, so nothing is configured per
+cluster beyond trust and reachability.
+
+- Put each cluster's `/etc/pve/pve-root-ca.pem` in `./ca/` under its own name
+  (`ca/pve-paris.pem`, `ca/pve-lyon.pem`, …). The whole directory is mounted
+  on `PVE_CA_FILE`; restart the container after adding one.
+- List each cluster's network in `PVE_ALLOWED_NETWORKS` (and its port in
+  `PVE_ALLOWED_PORTS` if it is not 8006).
+- In WHMCS, one console proxy selected in Settings covers every server. To
+  send a site through its own gateway, declare several proxies and pick one
+  per node in Cluster.
+
+```sh
+mkdir -p ca
+scp root@pve-paris:/etc/pve/pve-root-ca.pem ca/pve-paris.pem
+scp root@pve-lyon:/etc/pve/pve-root-ca.pem ca/pve-lyon.pem
+```
 
 ## WHMCS
 

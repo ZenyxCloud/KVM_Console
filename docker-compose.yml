@@ -7,6 +7,6 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     volumes:
-      - ./pve-root-ca.pem:/etc/kvm-console/pve-root-ca.pem:ro
+      - ./ca:/etc/kvm-console/ca:ro
     ports:
       - "127.0.0.1:8080:8080"

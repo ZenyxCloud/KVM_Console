@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -103,17 +104,12 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("PVE_TLS_INSECURE: %w", err))
 	}
 	c.PVETLS.InsecureSkipVerify = insecure
-	if file := getenv("PVE_CA_FILE"); file != "" {
-		pem, err := os.ReadFile(file)
+	if list := splitList(getenv("PVE_CA_FILE")); len(list) > 0 {
+		pool, err := loadCAs(list)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("PVE_CA_FILE: %w", err))
-		} else {
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(pem) {
-				errs = append(errs, errors.New("PVE_CA_FILE: no PEM certificate found"))
-			}
-			c.PVETLS.RootCAs = pool
 		}
+		c.PVETLS.RootCAs = pool
 	}
 
 	c.TokenTTL = durationEnv(getenv, "TOKEN_TTL", 60*time.Second, &errs)
@@ -216,4 +212,42 @@ func containsAddr(prefixes []netip.Prefix, a netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+func loadCAs(paths []string) (*x509.CertPool, error) {
+	pool := x509.NewCertPool()
+	var files []string
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			files = append(files, p)
+			continue
+		}
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if !e.IsDir() && (ext == ".pem" || ext == ".crt") {
+				files = append(files, filepath.Join(p, e.Name()))
+			}
+		}
+	}
+	if len(files) == 0 {
+		return nil, errors.New("no certificate file found")
+	}
+	for _, f := range files {
+		pem, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("%s: no PEM certificate found", f)
+		}
+	}
+	return pool, nil
 }

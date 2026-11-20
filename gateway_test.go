@@ -33,6 +33,14 @@ type fakePVE struct {
 
 func newFakePVE(t *testing.T) *fakePVE {
 	t.Helper()
+	srv := httptest.NewTLSServer(fakePVEHandler())
+	t.Cleanup(srv.Close)
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	return &fakePVE{srv: srv, port: port}
+}
+
+func fakePVEHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api2/json/nodes/pve1/qemu/101/vncwebsocket", func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie("PVEAuthCookie")
@@ -72,11 +80,7 @@ func newFakePVE(t *testing.T) *fakePVE {
 			}
 		}
 	})
-	srv := httptest.NewTLSServer(mux)
-	t.Cleanup(srv.Close)
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
-	return &fakePVE{srv: srv, port: port}
+	return mux
 }
 
 func testConfig(t *testing.T, pve *fakePVE, overrides map[string]string) *Config {
