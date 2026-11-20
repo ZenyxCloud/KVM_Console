@@ -46,8 +46,9 @@ Console listens on `127.0.0.1:8080` for the host's HTTPS reverse proxy.
    Machines**, create a machine client and grant it access to those resources.
 2. In Portainer, add a Git repository stack using `docker-compose.yml` as
    the Compose path. In **Environment variables**, enter the values from
-   `example.env`, or import a filled-out copy. Portainer writes those values
-   to `stack.env`, which both services read. Keep the filled file out of Git.
+   `example.env`, or import a filled-out copy. Portainer supplies the values
+   for Compose interpolation. Each service receives the variables listed
+   under its own `environment` block. Keep the filled file out of Git.
 3. Select a registry credential with pull access to
    `ghcr.io/zenyxcloud/kvm-console` if the package requires authentication.
    Enable GitOps updates for the branch you want Portainer to follow.
@@ -56,8 +57,8 @@ Start with these values and replace the examples with your own settings.
 
 ```dotenv
 PANGOLIN_ENDPOINT=https://pangolin.example.com
-CLIENT_ID=your-machine-client-id
-CLIENT_SECRET=your-machine-client-secret
+PANGOLIN_CLIENT_ID=your-machine-client-id
+PANGOLIN_CLIENT_SECRET=your-machine-client-secret
 API_KEY=your-generated-hex-key
 WHMCS_IPS=203.0.113.10
 PVE_ALLOWED_NETWORKS=10.20.0.0/16
@@ -66,14 +67,15 @@ ALLOWED_ORIGINS=https://my.zenyx.eu
 TRUSTED_PROXIES=127.0.0.1/32
 ```
 
+Existing stacks can keep `CLIENT_ID` and `CLIENT_SECRET` during migration.
+The names prefixed with `PANGOLIN_` take precedence when set.
+
 Generate `API_KEY` using `openssl rand -hex 32` and enter the same value in
 the WHMCS Console Proxy settings. `WHMCS_IPS` is the WHMCS server's egress IP
 as seen by the gateway after the reverse proxy. `PVE_ALLOWED_NETWORKS` must
 cover the real private destination addresses granted in Pangolin.
 `ALLOWED_ORIGINS` includes the public origins of the WHMCS client and admin
-areas. Remove any old `PVE_CA_FILE` value from the Portainer stack when
-switching to this Compose file. Set each private server's TLS fingerprint
-in WHMCS.
+areas. Set each private server's TLS fingerprint in WHMCS.
 
 The stack uses Pangolin's split tunnel and leaves DNS resolution to the
 gateway host. Use real private Proxmox addresses or hostnames the gateway can
@@ -87,8 +89,8 @@ and open a new WHMCS console. `/healthz` checks only the gateway process.
 
 ### Run from the command line
 
-For a new deployment outside Portainer, copy `example.env` to `stack.env`,
-fill it out, then start the same stack. Sign in to GHCR first if the image
+For a new deployment outside Portainer, copy `example.env` to `.env` beside
+`docker-compose.yml`, fill it out, then start the same stack. Sign in to GHCR first if the image
 requires authentication.
 
 ```sh

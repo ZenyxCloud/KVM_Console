@@ -8,10 +8,10 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    env_file: stack.env
     environment:
-      API_KEY: ""
-      API_KEY_FILE: ""
+      PANGOLIN_ENDPOINT: "${PANGOLIN_ENDPOINT:?Set PANGOLIN_ENDPOINT}"
+      CLIENT_ID: "${PANGOLIN_CLIENT_ID:-${CLIENT_ID:?Set PANGOLIN_CLIENT_ID}}"
+      CLIENT_SECRET: "${PANGOLIN_CLIENT_SECRET:-${CLIENT_SECRET:?Set PANGOLIN_CLIENT_SECRET}}"
     command: ["--override-dns=false"]
 
   kvm-console:
@@ -20,11 +20,24 @@ services:
     network_mode: host
     depends_on:
       - pangolin-cli
-    env_file: stack.env
     environment:
       LISTEN_ADDR: "127.0.0.1:8080"
-      CLIENT_ID: ""
-      CLIENT_SECRET: ""
+      API_KEY: "${API_KEY:?Set API_KEY}"
+      WHMCS_IPS: "${WHMCS_IPS:?Set WHMCS_IPS}"
+      PVE_ALLOWED_NETWORKS: "${PVE_ALLOWED_NETWORKS:?Set PVE_ALLOWED_NETWORKS}"
+      PVE_ALLOWED_PORTS: "${PVE_ALLOWED_PORTS:-}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-127.0.0.1/32}"
+      CLIENT_IP_VALIDATE: "${CLIENT_IP_VALIDATE:-}"
+      TOKEN_TTL: "${TOKEN_TTL:-}"
+      SESSION_MAX_DURATION: "${SESSION_MAX_DURATION:-}"
+      PVE_DIAL_TIMEOUT: "${PVE_DIAL_TIMEOUT:-}"
+      PING_INTERVAL: "${PING_INTERVAL:-}"
+      MAX_PENDING_TOKENS: "${MAX_PENDING_TOKENS:-}"
+      MAX_SESSIONS: "${MAX_SESSIONS:-}"
+      MAX_SESSIONS_PER_IP: "${MAX_SESSIONS_PER_IP:-}"
+      CLIENT_MESSAGE_LIMIT: "${CLIENT_MESSAGE_LIMIT:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-}"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
