@@ -4,9 +4,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"io"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +132,71 @@ func TestSeveralClustersWithTheirOwnCA(t *testing.T) {
 	}
 	if resp, err := open(rogue.port); err == nil || resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("cluster with an unknown CA must be refused, got %v %v", resp, err)
+	}
+}
+
+func TestClustersUseFingerprintsFromWHMCS(t *testing.T) {
+	a := newTestCluster(t, "cluster-a")
+	b := newTestCluster(t, "cluster-b")
+	env := map[string]string{
+		"API_KEY":              testAPIKey,
+		"WHMCS_IPS":            "127.0.0.1",
+		"PVE_ALLOWED_NETWORKS": "127.0.0.0/8",
+		"PVE_ALLOWED_PORTS":    strconv.Itoa(a.port) + "," + strconv.Itoa(b.port),
+		"ALLOWED_ORIGINS":      testOrigin,
+	}
+	cfg, err := LoadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(gw.Handler())
+	t.Cleanup(srv.Close)
+	h := &harness{t: t, gw: gw, srv: srv}
+	fingerprint := func(cluster *testCluster) string {
+		sum := sha256.Sum256(cluster.srv.Certificate().Raw)
+		return hex.EncodeToString(sum[:])
+	}
+
+	for _, tc := range []struct {
+		name string
+		pve  *testCluster
+		pin  []string
+		want int
+	}{
+		{"first cluster", a, []string{fingerprint(a)}, http.StatusSwitchingProtocols},
+		{"another cluster without gateway CA setup", b, []string{strings.ToUpper(fingerprint(b))}, http.StatusSwitchingProtocols},
+		{"wrong certificate", b, []string{fingerprint(a)}, http.StatusBadGateway},
+		{"no pin uses CA validation", a, nil, http.StatusBadGateway},
+		{"invalid pin", a, []string{strings.Repeat("z", 64)}, http.StatusUnprocessableEntity},
+		{"empty pin", a, []string{""}, http.StatusUnprocessableEntity},
+		{"ambiguous pin", a, []string{fingerprint(a), fingerprint(b)}, http.StatusUnprocessableEntity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.t = t
+			h.pve = &fakePVE{srv: tc.pve.srv, port: tc.pve.port}
+			form := h.validForm()
+			if tc.pin != nil {
+				form["tlsFingerprint"] = tc.pin
+			}
+			status, body := h.requestToken(form)
+			if tc.want == http.StatusUnprocessableEntity {
+				if status != tc.want {
+					t.Fatalf("token status %d, want %d", status, tc.want)
+				}
+				return
+			}
+			if status != http.StatusCreated {
+				t.Fatalf("token status %d, want %d", status, http.StatusCreated)
+			}
+			conn, resp, err := h.dial(body["token"].(string), testOrigin)
+			if conn != nil {
+				defer conn.CloseNow()
+			}
+			if resp == nil || resp.StatusCode != tc.want {
+				t.Fatalf("websocket response %v, want %d (error %v)", resp, tc.want, err)
+			}
+		})
 	}
 }
 

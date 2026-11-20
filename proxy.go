@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -59,10 +63,35 @@ func NewDialer(cfg *Config) *Dialer {
 func (d *Dialer) Dial(ctx context.Context, t Target, subprotocols []string) (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.cfg.DialTimeout*2)
 	defer cancel()
+	client := d.client
+	if t.TLSFingerprint != "" {
+		pinned := *d.client
+		transport := d.client.Transport.(*http.Transport).Clone()
+		// The leaf pin verifies the TLS connection before the HTTP upgrade can
+		// send the Proxmox cookie. Each token has its own verification settings.
+		transport.TLSClientConfig.InsecureSkipVerify = true
+		transport.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("proxmox did not present a certificate")
+			}
+			leaf := state.PeerCertificates[0]
+			digest := sha256.Sum256(leaf.Raw)
+			if hex.EncodeToString(digest[:]) != t.TLSFingerprint {
+				return errors.New("proxmox TLS certificate fingerprint does not match")
+			}
+			now := time.Now()
+			if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+				return errors.New("proxmox TLS certificate is outside its validity period")
+			}
+			return nil
+		}
+		pinned.Transport = transport
+		client = &pinned
+	}
 	h := http.Header{}
 	h.Set("Cookie", "PVEAuthCookie="+t.AuthToken)
 	conn, resp, err := websocket.Dial(ctx, t.URL, &websocket.DialOptions{
-		HTTPClient:      d.client,
+		HTTPClient:      client,
 		HTTPHeader:      h,
 		Subprotocols:    subprotocols,
 		CompressionMode: websocket.CompressionDisabled,
@@ -70,6 +99,11 @@ func (d *Dialer) Dial(ctx context.Context, t Target, subprotocols []string) (*we
 	if err != nil {
 		if resp != nil {
 			return nil, fmt.Errorf("proxmox answered HTTP %d", resp.StatusCode)
+		}
+		var requestErr *url.Error
+		if errors.As(err, &requestErr) {
+			// The request URL includes the console ticket.
+			return nil, requestErr.Err
 		}
 		return nil, err
 	}
@@ -171,7 +205,7 @@ func (s *Server) relay(parent context.Context, client, upstream *websocket.Conn)
 		err  error
 	}
 	done := make(chan result, 2)
-	go func() { done <- result{"client", copyMessages(ctx, upstream, client, &toVM)} }()
+	go func() { done <- result{"client", copyToProxmox(ctx, upstream, client, &toVM)} }()
 	go func() { done <- result{"proxmox", copyMessages(ctx, client, upstream, &toClient)} }()
 	go keepAlive(ctx, client, s.cfg.PingInterval, cancel)
 	go keepAlive(ctx, upstream, s.cfg.PingInterval, cancel)
@@ -192,6 +226,32 @@ func (s *Server) relay(parent context.Context, client, upstream *websocket.Conn)
 	cancel()
 	<-done
 	return toVM.Load(), toClient.Load(), reason
+}
+
+// Proxmox's websocket proxy accepts only final frames and forwards their payloads
+// to a byte stream. Split larger browser messages into independent binary frames.
+func copyToProxmox(ctx context.Context, dst, src *websocket.Conn, counter *atomic.Int64) error {
+	const frameSize = 64 << 10
+	for {
+		typ, data, err := src.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if len(data) > frameSize {
+			typ = websocket.MessageBinary
+		}
+		for len(data) > frameSize {
+			if err := dst.Write(ctx, typ, data[:frameSize]); err != nil {
+				return err
+			}
+			counter.Add(frameSize)
+			data = data[frameSize:]
+		}
+		if err := dst.Write(ctx, typ, data); err != nil {
+			return err
+		}
+		counter.Add(int64(len(data)))
+	}
 }
 
 func copyMessages(ctx context.Context, dst, src *websocket.Conn, counter *atomic.Int64) error {

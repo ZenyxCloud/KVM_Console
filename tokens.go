@@ -13,12 +13,13 @@ const tokenAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01234
 var errTooManyTokens = errors.New("too many pending console tokens")
 
 type Target struct {
-	URL       string
-	AuthToken string
-	Node      string
-	Kind      string
-	VMID      string
-	ClientIP  netip.Addr
+	URL            string
+	AuthToken      string
+	Node           string
+	Kind           string
+	VMID           string
+	ClientIP       netip.Addr
+	TLSFingerprint string
 }
 
 type tokenEntry struct {

@@ -1,63 +1,65 @@
 # Zenyx KVM Console
 
-Public entry point for the noVNC and xterm.js consoles once the Proxmox nodes
-are only reachable on the private network (VPN). It replaces the ModulesGarden
-console proxy shipped in `ZenyxCloud/whmcs_proxmox` under `proxy/` (Lumen on PHP 7.4, MySQL, nginx with
-`resolver 8.8.8.8`) with one static Go binary and no database.
+KVM Console relays WHMCS noVNC and xterm.js sessions to private Proxmox API
+endpoints over the VPN. It keeps the existing WHMCS **Console Proxy** API and
+stores pending tokens in memory. Token issuance and redemption must reach the
+same gateway instance. A restart discards its pending tokens.
 
-It speaks the same API as that proxy, so **the WHMCS module needs no code
-change**: it is declared in the module's existing *Console Proxy* settings.
-
-```
-Browser ── noVNC page served by WHMCS (VncConsole / Xtermjs packages)
-   │
-   │ wss://console.zenyx.cloud/auth/<token>/proxmox
-   ▼
-kvm-console (public HTTPS, leg on the VPN) ──wss──► PVE node :8006 vncwebsocket
-   ▲
-   │ POST /token (securityToken, URL, PVEAuthCookie, client ip)
-WHMCS (already reaches the PVE API over the VPN)
+```text
+WHMCS       ── HTTPS vncproxy or termproxy ──► Proxmox API endpoint
+WHMCS       ── HTTPS POST /token ────────────► KVM Console
+Browser     ── WSS /auth/<token>/proxmox ────► KVM Console
+KVM Console ── WSS vncwebsocket over VPN ────► Proxmox API endpoint
 ```
 
-1. The client opens the console in WHMCS. The module calls `vncproxy` (or
-   `termproxy`) on the node **as the VM's Proxmox user**, then posts the
-   websocket URL and that user's `PVEAuthCookie` to the gateway.
-2. The gateway checks the caller (WHMCS_IPS + API key) and the target
-   (https, allowed port, `/api2/json/nodes/<node>/(qemu|lxc)/<vmid>/vncwebsocket`,
-   only `port` and `vncticket` in the query), stores it in memory and returns
-   a random 32-character token, valid 60 s and **usable once**.
-3. WHMCS renders noVNC with `wss://<gateway>/auth/<token>/proxmox` and the VNC
-   ticket. The gateway checks the `Origin`, redeems the token, connects to the
-   node (certificate verified, destination IP re-checked against
-   `PVE_ALLOWED_NETWORKS` after DNS resolution) and relays frames both ways.
+1. WHMCS takes the endpoint from the Proxmox server assigned to the VPS and
+   requests a console ticket as the VPS's Proxmox user. The VM's recorded
+   node and VM ID are part of the API path. The gateway uses the host and
+   port supplied by WHMCS for the WebSocket connection.
+2. WHMCS sends the upstream WebSocket URL, the user's `PVEAuthCookie`, the
+   browser IP it sees, and the configured server fingerprint when present
+   to `POST /token`. The gateway checks the caller against `WHMCS_IPS` and
+   `API_KEY` and validates the target URL. It returns a single-use token that
+   expires after `TOKEN_TTL` (60 seconds by default). Proxmox controls the
+   lifetime of its own ticket.
+3. WHMCS serves the console page, which opens
+   `wss://<gateway>/auth/<token>/proxmox`. The gateway applies its Origin and
+   client IP settings, redeems the token, checks the destination IP and port
+   after DNS resolution, and opens the upstream TLS connection before
+   relaying the session.
 
-Nothing is written to disk; tickets and cookies are never logged.
+Gateway logs include session metadata such as node, VM ID and client IP.
+Reverse-proxy access logs can include the token in the WebSocket URL. Avoid
+logging the request path for `/auth/` if those logs are retained.
 
 ## Run
 
-```sh
-cp example.env .env
-openssl rand -hex 32
-docker compose up -d
-```
+For a new deployment, copy `example.env` to `.env` and set the values for your
+environment before starting the container. Generate the shared `API_KEY` with
+`openssl rand -hex 32` and use the same value in WHMCS.
 
 `ghcr.io/zenyxcloud/kvm-console` is built by `.github/workflows/ci.yml`
 (`latest` from `main`, `X.Y.Z` and `X.Y` from a `vX.Y.Z` tag). The image is
-private, distroless, non-root and runs read-only. Pull it on the VM with the
-read-only ZenyxDeploy account:
+private and distroless. It runs as a non-root user with a read-only
+filesystem under Compose. Pull it on the VM with the read-only ZenyxDeploy
+account.
 
 ```sh
 docker login ghcr.io -u ZenyxDeploy
 docker compose pull && docker compose up -d
 ```
 
-The host needs a public HTTPS name (e.g. `console.zenyx.cloud`) and a route to the
-nodes' port 8006 over the VPN. If the nodes are addressed by an internal DNS
-name, the container must use the internal resolver.
+The gateway needs a public HTTPS name and a route to the Proxmox API
+endpoints over the VPN. The container's DNS resolver must resolve any private
+hostnames used in WHMCS.
 
-Put it behind the existing reverse proxy (TLS, websockets, long timeouts) and
-list that proxy in `TRUSTED_PROXIES`, or let it terminate TLS itself with
-`TLS_CERT_FILE` / `TLS_KEY_FILE`. nginx example:
+The supplied Compose file publishes port 8080 on the host's loopback interface.
+Use a reverse proxy that supports WebSocket upgrades and list its source
+address as seen by the gateway in `TRUSTED_PROXIES`. For standalone TLS
+termination, set `TLS_CERT_FILE` and `TLS_KEY_FILE` to files the gateway can
+read and expose its HTTPS listener to WHMCS and browsers.
+
+The following nginx location forwards HTTPS traffic to the Compose listener.
 
 ```nginx
 location / {
@@ -72,18 +74,19 @@ location / {
 }
 ```
 
-Caddy needs nothing more than `reverse_proxy 127.0.0.1:8080`.
+With Caddy on the same host, use `reverse_proxy 127.0.0.1:8080` and configure
+`TRUSTED_PROXIES` as above.
 
 ## Configuration
 
-| Variable | Default | |
+| Variable | Default | Purpose |
 |---|---|---|
 | `API_KEY` / `API_KEY_FILE` | — | Shared secret, ≥ 32 characters. Same value as the API key in WHMCS. |
 | `WHMCS_IPS` | — | Addresses or CIDRs allowed to call `POST /token`. |
-| `PVE_ALLOWED_NETWORKS` | — | CIDRs the gateway may connect to (the private networks of every cluster). |
+| `PVE_ALLOWED_NETWORKS` | — | Required destination CIDRs. Use the dedicated Proxmox VPN address pools. |
 | `PVE_ALLOWED_PORTS` | `8006` | Ports allowed on the nodes. |
-| `PVE_CA_FILE` | system CAs | CA certificates of the nodes: files and/or directories (every `*.pem` / `*.crt` inside), comma-separated. One `/etc/pve/pve-root-ca.pem` per cluster. |
-| `PVE_TLS_INSECURE` | `false` | Skip certificate verification of the nodes. Last resort only. |
+| `PVE_CA_FILE` | system CAs | For unpinned connections, a replacement trust store built from comma-separated PEM files or directories of `*.pem` / `*.crt` files. |
+| `PVE_TLS_INSECURE` | `false` | Disables certificate verification for unpinned upstream connections when enabled. A supplied fingerprint is still verified. |
 | `ALLOWED_ORIGINS` | — | Origins allowed to open a console, e.g. `https://my.zenyx.eu`. Empty accepts any origin (warning logged). |
 | `TRUSTED_PROXIES` | — | Reverse proxies whose `X-Forwarded-For` is trusted. |
 | `CLIENT_IP_VALIDATE` | `false` | Require the browser IP seen by the gateway to equal the one WHMCS saw. Breaks clients whose IPv4/IPv6 path differs. |
@@ -97,49 +100,53 @@ Caddy needs nothing more than `reverse_proxy 127.0.0.1:8080`.
 | `LISTEN_ADDR` | `:8080` | |
 | `LOG_LEVEL` | `info` | JSON logs on stdout. |
 
-The node certificates must name the address WHMCS uses for the server (IP or
-hostname). After moving the nodes to private addresses, regenerate them with
-`pvecm updatecerts --force` on each node, or set a hostname that the
-certificates already contain.
+## WHMCS and cluster changes
 
-## Several clusters
+Use gateway and WHMCS module builds that both support fingerprints. Update the
+gateway first. In the Proxmox addon, create a proxy under **Tools → Console
+Proxy** with the gateway's HTTPS URL and shared `API_KEY`. Select it under
+**Settings → Console Proxy** as the global default. **Cluster** can override
+that choice for an individual node. Add the client and admin WHMCS origins
+to `ALLOWED_ORIGINS`.
 
-One gateway serves every Proxmox cluster and standalone node: the target
-comes from WHMCS with each console request, so nothing is configured per
-cluster beyond trust and reachability.
+WHMCS verifies the public gateway's HTTPS certificate when saving the proxy
+and when requesting a token. The save checks HTTPS with a HEAD request.
+Open a console to check the API key and route. Browsers verify the gateway
+certificate when they open the WebSocket.
 
-- Put each cluster's `/etc/pve/pve-root-ca.pem` in `./ca/` under its own name
-  (`ca/pve-paris.pem`, `ca/pve-lyon.pem`, …). The whole directory is mounted
-  on `PVE_CA_FILE`; restart the container after adding one.
-- List each cluster's network in `PVE_ALLOWED_NETWORKS` (and its port in
-  `PVE_ALLOWED_PORTS` if it is not 8006).
-- In WHMCS, one console proxy selected in Settings covers every server. To
-  send a site through its own gateway, declare several proxies and pick one
-  per node in Cluster.
+For private Proxmox certificates, set **TLS Certificate Fingerprint
+(SHA-256)** on the server entry used by the VPS in WHMCS. The authenticated
+`POST /token` carries it as the optional `tlsFingerprint` field with 64
+hexadecimal characters. The gateway verifies the exact leaf certificate and
+its validity period. An invalid, expired or mismatched certificate fails the
+upstream connection. When the field is omitted, the gateway uses normal
+certificate and hostname verification by default. `PVE_CA_FILE` is optional
+for unpinned servers whose CA is outside the system trust store. The Compose
+file mounts `./ca/` at `/etc/kvm-console/ca`, which can be set as
+`PVE_CA_FILE`. Changes to that trust store take effect after a gateway restart.
 
-```sh
-mkdir -p ca
-scp root@pve-paris:/etc/pve/pve-root-ca.pem ca/pve-paris.pem
-scp root@pve-lyon:/etc/pve/pve-root-ca.pem ca/pve-lyon.pem
-```
+The gateway maintains no inventory of nodes or clusters.
 
-## WHMCS
+| Change | Where to update it |
+|---|---|
+| Add or remove a node in an existing cluster, or move a VM | Keep the VPS's server and node current in WHMCS. The next console launch uses those records. |
+| Add a Proxmox server, change the API endpoint, or replace its certificate | Update the server entry and fingerprint in WHMCS. Update private DNS if the endpoint's address changes. |
+| Use a destination outside the configured VPN CIDRs or API ports | Update the gateway's route or allowlists as needed before issuing consoles to that destination. |
 
-In the module's admin area, **Tools → Console Proxy** → *Create*: host
-`console.zenyx.cloud`, API key = `API_KEY`. Then choose it in **Settings → Console
-Proxy** (all nodes) or per node in **Cluster**. noVNC and xterm.js then go
-through the gateway for clients and admins.
+A change in WHMCS affects new console launches. Previously issued tokens
+keep the URL and fingerprint received at issuance, with DNS resolved at
+connection time. An open WebSocket stays on its existing connection.
 
-WHMCS verifies the gateway's certificate when the Proxmox server has *Secure*
-enabled, so the public name needs a valid certificate.
+When neither a node nor a global proxy is configured, WHMCS uses the
+legacy Proxmox-hosted console page. A private endpoint then needs to be
+reachable by the browser. If a saved node override points to a deleted proxy,
+WHMCS tries the global selection. When that selection is unavailable,
+the console reports a configuration error. SPICE uses its own native
+connection and needs a reachable SPICE endpoint.
 
-## Not covered
+## Health check
 
-- **SPICE** (`.vv` file, port 3128 on the node) is not proxied and stops
-  working for private nodes.
-- When no console proxy is selected for a node, the module still falls back to
-  redirecting the browser to `https://<node>:8006/novnc/mgnovnc.html`, which
-  cannot work for private nodes.
+`GET /healthz` returns HTTP 200 with `{"status":"ok"}` while the gateway is serving requests.
 
 ## Tests
 
@@ -147,14 +154,12 @@ enabled, so the public name needs a valid certificate.
 go test -race ./...
 ```
 
-The Go tests run the whole path against a fake Proxmox websocket (TLS,
-cookie and ticket checks, subprotocol, 3 MiB frames, keepalive, close
-propagation) and cover the refusals: replayed or expired token, foreign
-origin, wrong key or caller, targets outside the allowlists (including a
-hostname resolving elsewhere), untrusted certificate, IP binding, limits. 
-
-`ZenyxCloud/whmcs_proxmox` keeps `tests/test-kvm-console-contract.php`, which
-drives the module's own `ProxyService` against a built binary:
+The Go tests use simulated Proxmox WebSocket endpoints. They exercise
+certificate fingerprints across two clusters without loading their CAs,
+CA-based trust, token expiry and replay, destination allowlists, and
+WebSocket frame relay. The PHP contract in `ZenyxCloud/whmcs_proxmox` checks
+TLS and token issuance using the module's `ProxyService` and the built
+gateway binary.
 
 ```sh
 CGO_ENABLED=0 go build -o /tmp/kvm-console .

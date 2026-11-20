@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -173,6 +176,30 @@ func (h *harness) dial(tok, origin string) (*websocket.Conn, *http.Response, err
 	return websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: hdr, Subprotocols: []string{"binary", "base64"}})
 }
 
+func TestPublicHealthOnlyReportsLiveness(t *testing.T) {
+	h := newHarness(t, nil)
+	conn, _, err := h.dial(h.issue(), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	h.issue()
+	waitFor(t, func() bool { return h.gw.sessions.Active() == 1 })
+
+	resp, err := http.Get(h.srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || len(body) != 1 || body["status"] != "ok" {
+		t.Fatalf("health status %d, body %v", resp.StatusCode, body)
+	}
+}
+
 func TestConsoleRoundTrip(t *testing.T) {
 	h := newHarness(t, nil)
 	conn, _, err := h.dial(h.issue(), testOrigin)
@@ -218,6 +245,108 @@ func TestConsoleRoundTrip(t *testing.T) {
 		t.Fatalf("expected normal close from proxmox, got %v", err)
 	}
 	waitFor(t, func() bool { return h.gw.sessions.Active() == 0 })
+}
+
+type consoleHandshake struct {
+	http.ResponseWriter
+	wire *bufio.ReadWriter
+}
+
+func (w *consoleHandshake) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, wire, err := w.ResponseWriter.(http.Hijacker).Hijack()
+	w.wire = wire
+	return conn, wire, err
+}
+
+func TestProxmoxAcceptsTerminalInputFrames(t *testing.T) {
+	// Real Proxmox rejects fragmented frames and forwards each payload to
+	// the same terminal byte stream. A generic websocket server accepts fragments.
+	input := bytes.Repeat([]byte("é"), 80<<10)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshake := &consoleHandshake{ResponseWriter: w}
+		upstream, err := websocket.Accept(handshake, r, &websocket.AcceptOptions{Subprotocols: []string{"binary"}})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer upstream.CloseNow()
+
+		var output []byte
+		for len(output) < len(input) {
+			var header [2]byte
+			if _, err := io.ReadFull(handshake.wire, header[:]); err != nil {
+				t.Error(err)
+				return
+			}
+			if header[0] != 0x82 || header[1]&0x80 == 0 {
+				t.Errorf("expected a masked, final binary frame, got %x", header)
+				return
+			}
+			size := uint64(header[1] & 0x7f)
+			switch size {
+			case 126:
+				var extended uint16
+				if err := binary.Read(handshake.wire, binary.BigEndian, &extended); err != nil {
+					t.Error(err)
+					return
+				}
+				size = uint64(extended)
+			case 127:
+				if err := binary.Read(handshake.wire, binary.BigEndian, &size); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+			if size == 0 || size > 128<<10 {
+				t.Errorf("unsupported Proxmox frame size %d", size)
+				return
+			}
+			var mask [4]byte
+			if _, err := io.ReadFull(handshake.wire, mask[:]); err != nil {
+				t.Error(err)
+				return
+			}
+			payload := make([]byte, size)
+			if _, err := io.ReadFull(handshake.wire, payload); err != nil {
+				t.Error(err)
+				return
+			}
+			for i := range payload {
+				payload[i] ^= mask[i%len(mask)]
+			}
+			output = append(output, payload...)
+		}
+		if !bytes.Equal(output, input) {
+			t.Error("Proxmox did not receive the original terminal input")
+			return
+		}
+		if err := upstream.Write(context.Background(), websocket.MessageBinary, []byte("OK")); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+
+	pveURL, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(pveURL.Port())
+	pve := &fakePVE{srv: srv, port: port}
+	gateway := NewServer(testConfig(t, pve, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	gatewayServer := httptest.NewServer(gateway.Handler())
+	defer gatewayServer.Close()
+	h := &harness{t: t, pve: pve, gw: gateway, srv: gatewayServer}
+
+	conn, _, err := h.dial(h.issue(), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, reply, err := conn.Read(ctx); err != nil || string(reply) != "OK" {
+		t.Fatalf("terminal reply %q: %v", reply, err)
+	}
 }
 
 func TestTokenIsSingleUse(t *testing.T) {

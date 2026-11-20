@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,11 +65,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeErrors(w, http.StatusMethodNotAllowed, "Invalid HTTP method")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "ok",
-		"sessions":       s.sessions.Active(),
-		"pending_tokens": s.tokens.Pending(),
-	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +95,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("token request rejected", "remote", caller.String(), "reason", err.Error())
 		writeErrors(w, http.StatusUnprocessableEntity, err.Error())
 		return
+	}
+	if fingerprints, present := r.PostForm["tlsFingerprint"]; present {
+		if len(fingerprints) != 1 || len(fingerprints[0]) != hex.EncodedLen(sha256.Size) {
+			writeErrors(w, http.StatusUnprocessableEntity, "Invalid Proxmox TLS fingerprint.")
+			return
+		}
+		if _, err := hex.DecodeString(fingerprints[0]); err != nil {
+			writeErrors(w, http.StatusUnprocessableEntity, "Invalid Proxmox TLS fingerprint.")
+			return
+		}
+		target.TLSFingerprint = strings.ToLower(fingerprints[0])
 	}
 	tok, id, err := s.tokens.Issue(target)
 	if err != nil {
