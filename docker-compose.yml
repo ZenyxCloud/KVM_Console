@@ -1,12 +1,32 @@
 services:
+  pangolin-cli:
+    image: fosrl/pangolin-cli:latest
+    container_name: pangolin-cli
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file: stack.env
+    environment:
+      API_KEY: ""
+      API_KEY_FILE: ""
+    command: ["--override-dns=false"]
+
   kvm-console:
     image: ghcr.io/zenyxcloud/kvm-console:latest
     restart: unless-stopped
-    env_file: .env
+    network_mode: host
+    depends_on:
+      - pangolin-cli
+    env_file: stack.env
+    environment:
+      LISTEN_ADDR: "127.0.0.1:8080"
+      CLIENT_ID: ""
+      CLIENT_SECRET: ""
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     volumes:
       - ./ca:/etc/kvm-console/ca:ro
-    ports:
-      - "127.0.0.1:8080:8080"

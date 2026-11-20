@@ -32,32 +32,81 @@ Gateway logs include session metadata such as node, VM ID and client IP.
 Reverse-proxy access logs can include the token in the WebSocket URL. Avoid
 logging the request path for `/auth/` if those logs are retained.
 
-## Run
+## Deploy on Portainer
 
-For a new deployment, copy `example.env` to `.env` and set the values for your
-environment before starting the container. Generate the shared `API_KEY` with
-`openssl rand -hex 32` and use the same value in WHMCS.
+Use a Linux Docker Standalone endpoint with `/dev/net/tun` available.
+The repository's `docker-compose.yml` starts KVM Console and the Pangolin
+CLI machine client. Both use the host network so KVM Console can use the
+Pangolin routes directly. Only the Pangolin container has `NET_ADMIN`. KVM
+Console listens on `127.0.0.1:8080` for the host's HTTPS reverse proxy.
 
-`ghcr.io/zenyxcloud/kvm-console` is built by `.github/workflows/ci.yml`
-(`latest` from `main`, `X.Y.Z` and `X.Y` from a `vX.Y.Z` tag). The image is
-private and distroless. It runs as a non-root user with a read-only
-filesystem under Compose. Pull it on the VM with the read-only ZenyxDeploy
-account.
+1. In Pangolin, use a site connector on a network that can reach Proxmox.
+   Create a **private CIDR** resource for each dedicated Proxmox subnet.
+   Allow TCP 8006, or the API ports configured in WHMCS. In **Clients →
+   Machines**, create a machine client and grant it access to those resources.
+2. In Portainer, add a Git repository stack using `docker-compose.yml` as
+   the Compose path. In **Environment variables**, enter the values from
+   `example.env`, or import a filled-out copy. Portainer writes those values
+   to `stack.env`, which both services read. Keep the filled file out of Git.
+3. Select a registry credential with pull access to
+   `ghcr.io/zenyxcloud/kvm-console` if the package requires authentication.
+   Enable GitOps updates for the branch you want Portainer to follow.
+
+Start with these values and replace the examples with your own settings.
+
+```dotenv
+PANGOLIN_ENDPOINT=https://pangolin.example.com
+CLIENT_ID=your-machine-client-id
+CLIENT_SECRET=your-machine-client-secret
+API_KEY=your-generated-hex-key
+WHMCS_IPS=203.0.113.10
+PVE_ALLOWED_NETWORKS=10.20.0.0/16
+PVE_ALLOWED_PORTS=8006
+ALLOWED_ORIGINS=https://my.zenyx.eu
+TRUSTED_PROXIES=127.0.0.1/32
+```
+
+Generate `API_KEY` using `openssl rand -hex 32` and enter the same value in
+the WHMCS Console Proxy settings. `WHMCS_IPS` is the WHMCS server's egress IP
+as seen by the gateway after the reverse proxy. `PVE_ALLOWED_NETWORKS` must
+cover the real private destination addresses granted in Pangolin.
+`ALLOWED_ORIGINS` includes the public origins of the WHMCS client and admin
+areas. Leave `PVE_CA_FILE` unset when all private endpoints are pinned in
+WHMCS.
+
+The stack uses Pangolin's split tunnel and leaves DNS resolution to the
+gateway host. Use real private Proxmox addresses or hostnames the gateway can
+resolve to those addresses. Do not assign an exit node to this machine client.
+WHMCS itself needs access to Proxmox to request the console ticket. If the
+gateway host has an alternate route to the same addresses, verify that the
+preferred route to them uses Pangolin.
+
+After deployment, verify that the machine client is connected in Pangolin
+and open a new WHMCS console. `/healthz` checks only the gateway process.
+
+### Run from the command line
+
+For a new deployment outside Portainer, copy `example.env` to `stack.env`,
+fill it out, then start the same stack. Sign in to GHCR first if the image
+requires authentication.
 
 ```sh
 docker login ghcr.io -u ZenyxDeploy
-docker compose pull && docker compose up -d
+docker compose pull
+docker compose up -d
 ```
 
-The gateway needs a public HTTPS name and a route to the Proxmox API
-endpoints over the VPN. The container's DNS resolver must resolve any private
-hostnames used in WHMCS.
+The image is built by `.github/workflows/ci.yml`. The `latest` tag follows
+`main`. Versioned Docker tags are published from release tags.
 
-The supplied Compose file publishes port 8080 on the host's loopback interface.
-Use a reverse proxy that supports WebSocket upgrades and list its source
-address as seen by the gateway in `TRUSTED_PROXIES`. For standalone TLS
-termination, set `TLS_CERT_FILE` and `TLS_KEY_FILE` to files the gateway can
-read and expose its HTTPS listener to WHMCS and browsers.
+### Public HTTPS endpoint
+
+Point a reverse proxy on the host network at `127.0.0.1:8080` and enable
+WebSocket upgrades. Set `TRUSTED_PROXIES` to the reverse proxy address used
+for the connection. If the reverse proxy is containerized, it must be able
+to reach the host loopback listener. For standalone deployments outside the
+provided Compose stack, the gateway can terminate TLS with `TLS_CERT_FILE`
+and `TLS_KEY_FILE`.
 
 The following nginx location forwards HTTPS traffic to the Compose listener.
 
@@ -97,7 +146,7 @@ With Caddy on the same host, use `reverse_proxy 127.0.0.1:8080` and configure
 | `CLIENT_MESSAGE_LIMIT` | `4194304` | Largest message accepted from a browser (bytes). |
 | `PING_INTERVAL` | `25s` | Websocket pings on both legs (keeps idle consoles open through proxies). |
 | `PVE_DIAL_TIMEOUT` | `10s` | |
-| `LISTEN_ADDR` | `:8080` | |
+| `LISTEN_ADDR` | `:8080` | The supplied Compose sets this to `127.0.0.1:8080`. |
 | `LOG_LEVEL` | `info` | JSON logs on stdout. |
 
 ## WHMCS and cluster changes
