@@ -68,8 +68,8 @@ ALLOWED_ORIGINS=https://my.zenyx.eu
 TRUSTED_PROXIES=127.0.0.1/32
 ```
 
-Existing stacks can keep `CLIENT_ID` and `CLIENT_SECRET` during migration.
-The names prefixed with `PANGOLIN_` take precedence when set.
+In existing Portainer stacks, rename `CLIENT_ID` to `PANGOLIN_CLIENT_ID`
+and `CLIENT_SECRET` to `PANGOLIN_CLIENT_SECRET` before redeploying.
 
 Generate `API_KEY` using `openssl rand -hex 32` and enter the same value in
 the WHMCS Console Proxy settings. `WHMCS_IPS` is the WHMCS server's egress IP

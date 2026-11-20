@@ -10,8 +10,8 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       PANGOLIN_ENDPOINT: "${PANGOLIN_ENDPOINT:?Set PANGOLIN_ENDPOINT}"
-      CLIENT_ID: "${PANGOLIN_CLIENT_ID:-${CLIENT_ID:?Set PANGOLIN_CLIENT_ID}}"
-      CLIENT_SECRET: "${PANGOLIN_CLIENT_SECRET:-${CLIENT_SECRET:?Set PANGOLIN_CLIENT_SECRET}}"
+      CLIENT_ID: "${PANGOLIN_CLIENT_ID:?Set PANGOLIN_CLIENT_ID}"
+      CLIENT_SECRET: "${PANGOLIN_CLIENT_SECRET:?Set PANGOLIN_CLIENT_SECRET}"
     command: ["--override-dns=false"]
 
   kvm-console:
