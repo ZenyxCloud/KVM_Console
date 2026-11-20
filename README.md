@@ -38,7 +38,7 @@ Use a Linux Docker Standalone endpoint with `/dev/net/tun` available.
 The repository's `docker-compose.yml` starts KVM Console and the Pangolin
 CLI machine client. Both use the host network so KVM Console can use the
 Pangolin routes directly. Only the Pangolin container has `NET_ADMIN`. KVM
-Console listens on `127.0.0.1:8080` for the host's HTTPS reverse proxy.
+Console defaults to `127.0.0.1:8080` for the host's HTTPS reverse proxy.
 
 1. In Pangolin, use a site connector on a network that can reach Proxmox.
    Create a **private CIDR** resource for each dedicated Proxmox subnet.
@@ -60,6 +60,7 @@ PANGOLIN_ENDPOINT=https://pangolin.example.com
 PANGOLIN_CLIENT_ID=your-machine-client-id
 PANGOLIN_CLIENT_SECRET=your-machine-client-secret
 API_KEY=your-generated-hex-key
+LISTEN_ADDR=127.0.0.1:8080
 WHMCS_IPS=203.0.113.10
 PVE_ALLOWED_NETWORKS=10.20.0.0/16
 PVE_ALLOWED_PORTS=8006
@@ -104,12 +105,16 @@ The image is built by `.github/workflows/ci.yml`. The `latest` tag follows
 
 ### Public HTTPS endpoint
 
-Point a reverse proxy on the host network at `127.0.0.1:8080` and enable
-WebSocket upgrades. Set `TRUSTED_PROXIES` to the reverse proxy address used
-for the connection. If the reverse proxy is containerized, it must be able
-to reach the host loopback listener. For standalone deployments outside the
-provided Compose stack, the gateway can terminate TLS with `TLS_CERT_FILE`
-and `TLS_KEY_FILE`.
+Point the HTTPS reverse proxy at the gateway listener and enable WebSocket
+upgrades. The default listener is `127.0.0.1:8080`. For a reverse proxy on
+another machine, set `LISTEN_ADDR=0.0.0.0:8090` in Portainer or `.env` and
+point the reverse proxy to the gateway host's IP on port 8090. Restrict
+access to that HTTP backend port to the reverse proxy. Set `TRUSTED_PROXIES`
+to the reverse proxy's source address.
+
+The Compose stack uses host networking, so `LISTEN_ADDR` sets the host port
+directly. For standalone deployments outside the Compose stack, the gateway
+can terminate TLS with `TLS_CERT_FILE` and `TLS_KEY_FILE`.
 
 The following nginx location forwards HTTPS traffic to the Compose listener.
 
@@ -149,7 +154,7 @@ With Caddy on the same host, use `reverse_proxy 127.0.0.1:8080` and configure
 | `CLIENT_MESSAGE_LIMIT` | `4194304` | Largest message accepted from a browser (bytes). |
 | `PING_INTERVAL` | `25s` | Websocket pings on both legs (keeps idle consoles open through proxies). |
 | `PVE_DIAL_TIMEOUT` | `10s` | |
-| `LISTEN_ADDR` | `:8080` | The supplied Compose sets this to `127.0.0.1:8080`. |
+| `LISTEN_ADDR` | `:8080` | Host bind address and port. Compose defaults to `127.0.0.1:8080`. |
 | `LOG_LEVEL` | `info` | JSON logs on stdout. |
 
 ## WHMCS and cluster changes

@@ -21,7 +21,7 @@ services:
     depends_on:
       - pangolin-cli
     environment:
-      LISTEN_ADDR: "127.0.0.1:8080"
+      LISTEN_ADDR: "${LISTEN_ADDR:-127.0.0.1:8080}"
       API_KEY: "${API_KEY:?Set API_KEY}"
       WHMCS_IPS: "${WHMCS_IPS:?Set WHMCS_IPS}"
       PVE_ALLOWED_NETWORKS: "${PVE_ALLOWED_NETWORKS:?Set PVE_ALLOWED_NETWORKS}"
