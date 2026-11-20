@@ -1,0 +1,12 @@
+services:
+  kvm-console:
+    image: ghcr.io/zenyxcloud/kvm-console:latest
+    restart: unless-stopped
+    env_file: .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./pve-root-ca.pem:/etc/kvm-console/pve-root-ca.pem:ro
+    ports:
+      - "127.0.0.1:8080:8080"
