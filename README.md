@@ -71,8 +71,9 @@ the WHMCS Console Proxy settings. `WHMCS_IPS` is the WHMCS server's egress IP
 as seen by the gateway after the reverse proxy. `PVE_ALLOWED_NETWORKS` must
 cover the real private destination addresses granted in Pangolin.
 `ALLOWED_ORIGINS` includes the public origins of the WHMCS client and admin
-areas. Leave `PVE_CA_FILE` unset when all private endpoints are pinned in
-WHMCS.
+areas. Remove any old `PVE_CA_FILE` value from the Portainer stack when
+switching to this Compose file. Set each private server's TLS fingerprint
+in WHMCS.
 
 The stack uses Pangolin's split tunnel and leaves DNS resolution to the
 gateway host. Use real private Proxmox addresses or hostnames the gateway can
@@ -169,10 +170,9 @@ For private Proxmox certificates, set **TLS Certificate Fingerprint
 hexadecimal characters. The gateway verifies the exact leaf certificate and
 its validity period. An invalid, expired or mismatched certificate fails the
 upstream connection. When the field is omitted, the gateway uses normal
-certificate and hostname verification by default. `PVE_CA_FILE` is optional
-for unpinned servers whose CA is outside the system trust store. The Compose
-file mounts `./ca/` at `/etc/kvm-console/ca`, which can be set as
-`PVE_CA_FILE`. Changes to that trust store take effect after a gateway restart.
+certificate and hostname verification with the system CAs by default.
+A standalone gateway can use `PVE_CA_FILE` to load a custom trust store
+at startup.
 
 The gateway maintains no inventory of nodes or clusters.
 
